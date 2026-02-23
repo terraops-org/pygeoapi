@@ -1,0 +1,29 @@
+# Geospatial requirements for pygeoapi geo/full images.
+# Adds geo packages on top of requirements-slim.txt.
+# No database clients here (those go in requirements-provider.txt).
+#
+# NOTE: rasterio, fiona, pyogrio are NOT listed here — they are
+# installed separately in the Dockerfile with --no-binary to build
+# from source against the system GDAL (avoids bundled libgdal bloat).
+# GDAL Python bindings and numpy come from the osgeo base image
+# via --system-site-packages.
+
+# Geospatial
+geopandas
+pyarrow
+
+# Scientific/numeric
+scipy
+pandas
+xarray
+netCDF4
+cftime
+zarr<3
+
+# Cloud storage
+s3fs<=2023.6.0
+azure-identity
+azure-storage-blob
+
+# OGC metadata
+pygeometa

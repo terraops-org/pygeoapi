@@ -1,0 +1,160 @@
+# =================================================================
+#
+# Slim pygeoapi image — minimal footprint, no GDAL.
+# Supports: CSV, GeoJSON, TinyDB, Filesystem, SQLiteGPKG providers.
+#
+# Addresses issue #1753 (Docker container variants).
+#
+# =================================================================
+
+ARG SPATIALITE_VERSION=5.1.0
+
+# =================================================================
+# Stage 1: BUILDER — Python wheels + mod_spatialite from source
+# =================================================================
+FROM ubuntu:noble-20251013 AS builder
+
+ARG SPATIALITE_VERSION
+ENV DEBIAN_FRONTEND="noninteractive"
+
+# proj and geos headers for pyproj/shapely wheels,
+# sqlite3 headers for mod_spatialite build.
+# No GDAL, no ubuntugis PPA.
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        python3 \
+        python3-pip \
+        python3-venv \
+        python3-dev \
+        libproj-dev \
+        libgeos-dev \
+        libsqlite3-dev \
+        libminizip-dev \
+        pkg-config \
+        file \
+        curl \
+        unzip \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build mod_spatialite from source with optional deps disabled.
+# This avoids libxml2 → libicu74 (36 MB) and libfreexl (0.15 MB).
+WORKDIR /build/spatialite
+RUN curl -sSL https://www.gaia-gis.it/gaia-sins/libspatialite-sources/libspatialite-${SPATIALITE_VERSION}.tar.gz \
+        | tar xz --strip-components=1 \
+    && ./configure \
+        --prefix=/usr/local \
+        --enable-module-only \
+        --enable-proj=yes \
+        --enable-geos=yes \
+        --enable-geosadvanced=yes \
+        --enable-geosreentrant=yes \
+        --enable-geopackage=yes \
+        --enable-libxml2=no \
+        --enable-freexl=no \
+        --enable-rttopo=no \
+        --enable-gcp=no \
+        --enable-examples=no \
+        --disable-static \
+        --quiet \
+    && make -j$(nproc) --quiet \
+    && make install-strip \
+    && ldconfig
+
+# Download OGC schemas in builder (avoids curl/unzip in runtime image and libcript lib that is big)
+WORKDIR /build/schemas
+RUN curl -sSO http://schemas.opengis.net/SCHEMAS_OPENGIS_NET.zip \
+    && unzip -q SCHEMAS_OPENGIS_NET.zip "ogcapi/*" -d /schemas.opengis.net \
+    && rm -f SCHEMAS_OPENGIS_NET.zip
+
+# Python venv + pip wheels
+WORKDIR /build
+RUN python3 -m venv /venv \
+    && /venv/bin/python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install slim requirements only (no GDAL, no database clients)
+COPY docker-proposals/requirements-slim.txt ./
+RUN /venv/bin/python3 -m pip install --no-cache-dir -r requirements-slim.txt
+
+# Install pygeoapi (non-editable, --no-deps to avoid pulling rasterio
+# from setup.py's install_requires; requirements-slim.txt has the deps we need)
+COPY . /build/pygeoapi
+RUN /venv/bin/python3 -m pip install --no-cache-dir --no-deps /build/pygeoapi
+
+# Clean up venv: remove pip/setuptools, strip binaries, purge caches
+# if dockerbuild kit is active this could be a mounted cache 
+RUN /venv/bin/python3 -m pip uninstall -y pip setuptools wheel \
+    && find /venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true \
+    && find /venv -type f -name '*.pyc' -delete \
+    && find /venv -type f -name '*.so' -exec strip -s {} + 2>/dev/null; true \
+    && rm -rf /venv/share /venv/include
+
+# =================================================================
+# Stage 2: RUNTIME
+# =================================================================
+FROM ubuntu:noble-20251013
+
+LABEL maintainer="Just van den Broecke <justb4@gmail.com>"
+
+# Slim pygeoapi: no GDAL, no database providers.
+# Supports CSV, GeoJSON, TinyDB, Filesystem, SQLiteGPKG providers.
+# Same entrypoint.sh and ENV interface as the full image.
+
+ARG TZ="Etc/UTC"
+ARG LANG="en_US.UTF-8"
+
+ENV TZ=${TZ} \
+    LANG=${LANG} \
+    DEBIAN_FRONTEND="noninteractive" \
+    PROJ_LIB=/usr/share/proj
+
+WORKDIR /pygeoapi
+
+# Runtime deps: proj and geos shared libs (no GDAL, no ubuntugis PPA).
+# mod_spatialite is copied from builder — no apt libsqlite3-mod-spatialite,
+# which avoids libxml2 → libicu74 (36 MB).
+# No curl/unzip needed — OGC schemas are downloaded in builder stage.
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+        locales \
+        tzdata \
+        python3 \
+        python3-venv \
+        libproj25 \
+        libgeos-c1t64 \
+        libsqlite3-0 \
+        libminizip1t64 \
+    && localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8 \
+    && echo "For ${TZ} date=$(date)" && echo "Locale=$(locale)" \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# OGC schemas from builder
+COPY --from=builder /schemas.opengis.net /schemas.opengis.net
+
+# Copy mod_spatialite.so from builder (built without libxml2/freexl/rttopo)
+COPY --from=builder /usr/local/lib/mod_spatialite.so /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/local/lib/mod_spatialite.so.8 /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/local/lib/mod_spatialite.so.8.1.0 /usr/lib/x86_64-linux-gnu/
+
+COPY --from=builder /venv /venv
+
+# Copy only what's needed — exclude tests, docs, .git
+COPY docker-proposals/slim.config.yml /pygeoapi/local.config.yml
+COPY docker /pygeoapi/docker
+COPY pygeoapi /pygeoapi/pygeoapi
+COPY locale /pygeoapi/locale
+COPY pygeoapi-config.yml /pygeoapi/pygeoapi-config.yml
+COPY setup.py /pygeoapi/setup.py
+COPY README.md /pygeoapi/README.md
+COPY requirements.txt /pygeoapi/requirements.txt
+COPY tests/data /pygeoapi/tests/data
+
+RUN ldconfig \
+    && cp /pygeoapi/docker/entrypoint.sh /entrypoint.sh \
+    && cd /pygeoapi \
+    && for i in locale/*; do if [ "$i" != "locale/README.md" ]; then echo $i && /venv/bin/pybabel compile -d locale -l `basename $i`; fi; done \
+    && chmod -R g=u /pygeoapi
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,31 @@
+# Minimal requirements for pygeoapi slim image.
+# Supports: CSV, GeoJSON, TinyDB, Filesystem providers.
+# No GDAL, no rasterio, no database clients.
+
+# Core pygeoapi dependencies (subset of requirements.txt minus rasterio)
+Babel
+click
+filelock
+Flask
+jinja2
+jsonschema
+pydantic
+pygeofilter
+pygeoif
+pyproj
+python-dateutil
+pytz
+PyYAML
+requests
+shapely
+SQLAlchemy
+tinydb
+
+# Docker runtime: web server
+Flask-Cors
+gunicorn
+gevent
+greenlet
+
+# Admin
+jsonpatch

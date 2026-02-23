@@ -1,0 +1,120 @@
+# =================================================================
+#
+# Alpine slim pygeoapi — experimental, smallest possible image.
+# Supports: CSV, GeoJSON, TinyDB, Filesystem, SQLiteGPKG providers.
+#
+# =================================================================
+
+ARG SPATIALITE_VERSION=5.1.0
+ARG PYTHON_VERSION=3.12
+
+# =================================================================
+# Stage 1: BUILDER
+# =================================================================
+FROM python:${PYTHON_VERSION}-alpine AS builder
+
+ARG SPATIALITE_VERSION
+
+# Build deps for Python wheels (pyproj, shapely) and mod_spatialite
+RUN apk add --no-cache \
+        build-base \
+        proj-dev \
+        geos-dev \
+        sqlite-dev \
+        minizip-dev \
+        curl
+
+# Build mod_spatialite from source (no libxml2, no freexl)
+WORKDIR /build/spatialite
+RUN curl -sSL https://www.gaia-gis.it/gaia-sins/libspatialite-sources/libspatialite-${SPATIALITE_VERSION}.tar.gz \
+        | tar xz --strip-components=1 \
+    && ./configure \
+        --prefix=/usr/local \
+        --enable-module-only \
+        --enable-proj=yes \
+        --enable-geos=yes \
+        --enable-geosadvanced=yes \
+        --enable-geosreentrant=yes \
+        --enable-geopackage=yes \
+        --enable-libxml2=no \
+        --enable-freexl=no \
+        --enable-rttopo=no \
+        --enable-gcp=no \
+        --enable-examples=no \
+        --disable-static \
+        --quiet \
+    && make -j$(nproc) --quiet \
+    && make install-strip \
+    && ldconfig /usr/local/lib 2>/dev/null || true
+
+# Download OGC schemas
+WORKDIR /build/schemas
+RUN curl -sSO http://schemas.opengis.net/SCHEMAS_OPENGIS_NET.zip \
+    && unzip -q SCHEMAS_OPENGIS_NET.zip "ogcapi/*" -d /schemas.opengis.net \
+    && rm -f SCHEMAS_OPENGIS_NET.zip
+
+# Python venv + wheels
+WORKDIR /build
+RUN python3 -m venv /venv \
+    && /venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel
+
+COPY docker-proposals/requirements-slim.txt ./
+RUN /venv/bin/pip install --no-cache-dir -r requirements-slim.txt
+
+COPY . /build/pygeoapi
+RUN /venv/bin/pip install --no-cache-dir --no-deps /build/pygeoapi
+
+# Clean up venv
+RUN /venv/bin/pip uninstall -y pip setuptools wheel \
+    && find /venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true \
+    && find /venv -type f -name '*.pyc' -delete \
+    && find /venv -type f -name '*.so' -exec strip -s {} + 2>/dev/null; true \
+    && rm -rf /venv/share /venv/include
+
+# =================================================================
+# Stage 2: RUNTIME
+# =================================================================
+FROM python:${PYTHON_VERSION}-alpine
+
+ARG TZ="Etc/UTC"
+
+ENV TZ=${TZ} \
+    PROJ_LIB=/usr/share/proj
+
+WORKDIR /pygeoapi
+
+# Runtime deps only — Alpine packages are minimal by default
+RUN apk add --no-cache \
+        proj \
+        geos \
+        sqlite-libs \
+        minizip \
+        bash
+
+# mod_spatialite from builder
+COPY --from=builder /usr/local/lib/mod_spatialite.so /usr/lib/
+COPY --from=builder /usr/local/lib/mod_spatialite.so.8 /usr/lib/
+COPY --from=builder /usr/local/lib/mod_spatialite.so.8.1.0 /usr/lib/
+
+# OGC schemas from builder
+COPY --from=builder /schemas.opengis.net /schemas.opengis.net
+
+COPY --from=builder /venv /venv
+
+# Copy only what's needed
+COPY docker-proposals/slim.config.yml /pygeoapi/local.config.yml
+COPY docker /pygeoapi/docker
+COPY pygeoapi /pygeoapi/pygeoapi
+COPY locale /pygeoapi/locale
+COPY pygeoapi-config.yml /pygeoapi/pygeoapi-config.yml
+COPY setup.py /pygeoapi/setup.py
+COPY README.md /pygeoapi/README.md
+COPY requirements.txt /pygeoapi/requirements.txt
+COPY tests/data /pygeoapi/tests/data
+
+RUN cp /pygeoapi/docker/entrypoint.sh /entrypoint.sh \
+    && cd /pygeoapi \
+    && for i in locale/*; do if [ "$i" != "locale/README.md" ]; then echo $i && /venv/bin/pybabel compile -d locale -l `basename $i`; fi; done \
+    && chmod -R g=u /pygeoapi
+
+ENTRYPOINT ["/entrypoint.sh"]
