@@ -1,6 +1,6 @@
 # =================================================================
 #
-# Geo pygeoapi image — GDAL + file-based geospatial providers.
+# Standard pygeoapi image — GDAL + file-based geospatial providers.
 # No database clients (PostgreSQL, MongoDB, Elasticsearch, etc.).
 # Supports: OGR, Rasterio, Fiona, GeoPackage, Shapefile, Parquet,
 #           xarray/NetCDF, CSV, GeoJSON, TinyDB, Filesystem,
@@ -18,11 +18,10 @@
 #
 # =================================================================
 
-ARG GDAL_VERSION=3.11.4
+ARG GDAL_VERSION=3.12.4
 
-# =================================================================
+
 # Stage 1: BUILDER — compile native extensions against system GDAL
-# =================================================================
 FROM ghcr.io/osgeo/gdal:ubuntu-small-${GDAL_VERSION} AS builder
 
 ENV DEBIAN_FRONTEND="noninteractive"
@@ -30,9 +29,6 @@ ENV DEBIAN_FRONTEND="noninteractive"
 # Build deps: compilers + Python headers.
 # NOTE: Do NOT install libgdal-dev or any GDAL apt packages —
 # the osgeo base image provides GDAL at /usr/local/gdal-internal/.
-# Tip: with DOCKER_BUILDKIT=1, you can replace the rm -rf with:
-#   --mount=type=cache,target=/var/cache/apt,sharing=locked
-#   --mount=type=cache,target=/var/lib/apt,sharing=locked
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -66,9 +62,9 @@ RUN /venv/bin/python3 -m pip install --no-cache-dir \
     rasterio fiona pyogrio
 
 # Install remaining geo packages (pure Python or binary-safe)
-COPY docker-proposals/requirements-geo.txt ./
+COPY docker-proposals/requirements-standard.txt ./
 RUN /venv/bin/python3 -m pip install --no-cache-dir \
-    -r requirements-geo.txt
+    -r requirements-standard.txt
 
 # Install pygeoapi (non-editable, --no-deps to avoid pulling
 # rasterio again from setup.py's install_requires)
@@ -88,14 +84,12 @@ RUN /venv/bin/python3 -m pip uninstall -y pip setuptools wheel Cython \
     && find /venv -type f -name '*.so' -exec strip -s {} + 2>/dev/null; true \
     && rm -rf /venv/share /venv/include
 
-# =================================================================
 # Stage 2: RUNTIME — system GDAL + lean venv, no compilers
-# =================================================================
 FROM ghcr.io/osgeo/gdal:ubuntu-small-${GDAL_VERSION}
 
 LABEL maintainer="Just van den Broecke <justb4@gmail.com>"
 
-# Geo pygeoapi: GDAL + file-based geospatial providers, no databases.
+# Standard pygeoapi: GDAL + file-based geospatial providers, no databases.
 # Same entrypoint.sh and ENV interface as the full image.
 
 ARG TZ="Etc/UTC"
@@ -104,6 +98,12 @@ ARG LANG="en_US.UTF-8"
 ENV TZ=${TZ} \
     LANG=${LANG} \
     DEBIAN_FRONTEND="noninteractive"
+
+# Read GeoPackage/SQLite via GDAL/OGR, not the SpatiaLite SQLiteGPKG provider
+# (which crashes when GDAL is loaded in the same process — see
+# docker-proposals/SPATIALITE-GDAL-CONFLICT.md). Skip any such incompatible
+# collection in the stock default config instead of aborting startup.
+ENV PYGEOAPI_OPENAPI_GENERATE_FAIL_ON_INVALID_COLLECTION=false
 
 WORKDIR /pygeoapi
 

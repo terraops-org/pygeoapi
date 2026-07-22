@@ -1,4 +1,4 @@
-# Geospatial requirements for pygeoapi geo/full images.
+# Geospatial requirements for pygeoapi standard/full images.
 # Adds geo packages on top of requirements-slim.txt.
 # No database clients here (those go in requirements-provider.txt).
 #
@@ -7,6 +7,12 @@
 # from source against the system GDAL (avoids bundled libgdal bloat).
 # GDAL Python bindings and numpy come from the osgeo base image
 # via --system-site-packages.
+
+# The osgeo base's GDAL Python bindings (reused via --system-site-packages)
+# are compiled against numpy 1.26.x. Pin numpy <2 so the scientific stack
+# below does not upgrade it and break osgeo._gdal_array with a NumPy 2.x
+# ABI crash (std::bad_alloc at import).
+numpy<2
 
 # Geospatial
 geopandas

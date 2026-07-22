@@ -1,0 +1,102 @@
+# =================================================================
+#
+# HIGHLY EXPERIMENTAL distroless pygeoapi image "hardened slim".
+#
+# Base: gcr.io/distroless/python3-debian13 (Python 3.13, NO shell,
+# NO package manager, minimal attack surface). Vector providers only
+# (CSV, GeoJSON, TinyDB). alpine already gets a small image; distroless removes the
+# shell/apt entirely. This to decrease the image size and tight its security
+#
+# Current work: pure-Python providers. shapely/pyproj wheels bundle
+# their own libgeos/libproj, so NO system geo libs are needed.
+# SQLiteGPKG/SpatiaLite is intentionally omitted (would need
+# mod_spatialite + libproj/libgeos copied in next interration).
+#
+# The bash docker/entrypoint.sh cannot run here (NO SHELL); it is
+# replaced by docker-proposals/entrypoint.py.
+#
+# Addresses issue #1753 (Docker container variants).
+#
+# =================================================================
+
+
+# Stage 1: BUILDER — Debian 13 (trixie), matching the distroless base
+# line up exactly with gcr.io/distroless/python3-debian13.
+FROM debian:trixie-slim AS builder
+
+ENV DEBIAN_FRONTEND="noninteractive"
+
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-venv \
+        python3-pip \
+        python3-dev \
+        build-essential \
+        curl \
+        unzip \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# --copies so /venv/bin/python3 is a real binary (not a symlink into
+# the builder), resolvable in the distroless runtime.
+RUN python3 -m venv --copies /venv \
+    && /venv/bin/python3 -m pip install --no-cache-dir \
+        --upgrade pip setuptools wheel
+
+# Slim requirements (no GDAL, no DB clients)
+COPY docker-proposals/requirements-slim.txt ./
+RUN /venv/bin/python3 -m pip install --no-cache-dir -r requirements-slim.txt
+
+# pygeoapi (non-editable, --no-deps: requirements-slim.txt has the deps)
+COPY . /build/pygeoapi
+RUN /venv/bin/python3 -m pip install --no-cache-dir --no-deps /build/pygeoapi
+
+# OGC schemas in builder — distroless has no curl/unzip
+RUN curl -sSO http://schemas.opengis.net/SCHEMAS_OPENGIS_NET.zip \
+    && unzip -q SCHEMAS_OPENGIS_NET.zip "ogcapi/*" -d /schemas.opengis.net \
+    && rm -f SCHEMAS_OPENGIS_NET.zip
+
+# Compile locale .mo files here — the runtime cannot (no shell/pybabel run)
+COPY locale /build/locale
+RUN for d in /build/locale/*/ ; do \
+        lang="$(basename "$d")" ; \
+        /venv/bin/pybabel compile -d /build/locale -l "$lang" || true ; \
+    done
+
+# Trim the venv: drop build tooling, strip .so, purge caches
+RUN /venv/bin/python3 -m pip uninstall -y pip setuptools wheel \
+    && find /venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true \
+    && find /venv -type f -name '*.pyc' -delete \
+    && find /venv -type f -name '*.so' -exec strip -s {} + 2>/dev/null; true \
+    && rm -rf /venv/share /venv/include
+
+# Stage 2: RUNTIME — distroless (no shell, no package manager)
+FROM gcr.io/distroless/python3-debian13
+
+LABEL maintainer="Just van den Broecke <justb4@gmail.com>"
+
+# venv holds the cp313 wheels; interpreter + stdlib + native deps
+# (libssl, libsqlite3, libffi, ...) come from the distroless base.
+COPY --from=builder /venv /venv
+COPY --from=builder /schemas.opengis.net /schemas.opengis.net
+COPY --from=builder /build/locale /pygeoapi/locale
+
+# Application
+COPY pygeoapi /pygeoapi/pygeoapi
+COPY docker-proposals/distroless.config.yml /pygeoapi/local.config.yml
+COPY docker-proposals/entrypoint.py /pygeoapi/entrypoint.py
+COPY pygeoapi-config.yml /pygeoapi/pygeoapi-config.yml
+COPY tests/data /pygeoapi/tests/data
+
+ENV PYGEOAPI_HOME=/pygeoapi \
+    LANG=C.UTF-8 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /pygeoapi
+
+# Run our shell-free launcher through the venv interpreter so venv
+# site-packages are on sys.path. (Base image ENTRYPOINT is python3.)
+ENTRYPOINT ["/venv/bin/python3", "/pygeoapi/entrypoint.py"]

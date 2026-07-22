@@ -46,21 +46,13 @@
 # built from source against the system GDAL libs, eliminating the
 # ~250 MB of duplicated libgdal copies that pip binary wheels bundle.
 
-ARG GDAL_VERSION=3.11.4
+ARG GDAL_VERSION=3.12.4
 
-# =================================================================
 # Stage 1: BUILDER — compile native extensions against system GDAL
-# =================================================================
 FROM ghcr.io/osgeo/gdal:ubuntu-small-${GDAL_VERSION} AS builder
 
 ENV DEBIAN_FRONTEND="noninteractive"
 
-# Build deps: compilers + Python headers + libpq for psycopg2.
-# NOTE: Do NOT install libgdal-dev or any GDAL apt packages —
-# the osgeo base image provides GDAL at /usr/local/gdal-internal/.
-# Tip: with DOCKER_BUILDKIT=1, you can replace the rm -rf with:
-#   --mount=type=cache,target=/var/cache/apt,sharing=locked
-#   --mount=type=cache,target=/var/lib/apt,sharing=locked
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -94,9 +86,9 @@ RUN /venv/bin/python3 -m pip install --no-cache-dir \
     rasterio fiona pyogrio
 
 # Install geo packages (pure Python or binary-safe)
-COPY docker-proposals/requirements-geo.txt ./
+COPY docker-proposals/requirements-standard.txt ./
 RUN /venv/bin/python3 -m pip install --no-cache-dir \
-    -r requirements-geo.txt
+    -r requirements-standard.txt
 
 # Install DB clients
 # psycopg2 is built from source against libpq-dev (installed above).
@@ -104,10 +96,15 @@ RUN /venv/bin/python3 -m pip install --no-cache-dir \
 COPY requirements-docker.txt requirements-provider.txt ./
 COPY requirements-admin.txt requirements-manager.txt ./
 COPY requirements-pubsub.txt ./
-RUN /venv/bin/python3 -m pip install --no-cache-dir \
+# GDAL Python bindings come from the osgeo base (via --system-site-packages),
+# matching the system GDAL exactly. requirements-provider.txt pins GDAL<=3.11.3,
+# which conflicts with the base's newer GDAL and would force pip to source-build
+# an old, incompatible binding. Strip it — the base already provides osgeo.gdal.
+RUN grep -iv '^gdal' requirements-provider.txt > requirements-provider.nogdal.txt \
+    && /venv/bin/python3 -m pip install --no-cache-dir \
     --no-binary psycopg2 \
     -r requirements-docker.txt \
-    -r requirements-provider.txt \
+    -r requirements-provider.nogdal.txt \
     -r requirements-admin.txt \
     -r requirements-manager.txt \
     -r requirements-pubsub.txt
@@ -154,6 +151,12 @@ ARG LANG="en_US.UTF-8"
 ENV TZ=${TZ} \
     LANG=${LANG} \
     DEBIAN_FRONTEND="noninteractive"
+
+# Read GeoPackage/SQLite via GDAL/OGR, not the SpatiaLite SQLiteGPKG provider
+# (which crashes when GDAL is loaded in the same process — see
+# docker-proposals/SPATIALITE-GDAL-CONFLICT.md). Skip any such incompatible
+# collection in the stock default config instead of aborting startup.
+ENV PYGEOAPI_OPENAPI_GENERATE_FAIL_ON_INVALID_COLLECTION=false
 
 WORKDIR /pygeoapi
 

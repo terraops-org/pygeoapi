@@ -1,6 +1,6 @@
 # =================================================================
 #
-# Alpine slim pygeoapi — experimental, smallest possible image.
+# Alpine slim pygeoapi: experimental, smallest possible image.
 # Supports: CSV, GeoJSON, TinyDB, Filesystem, SQLiteGPKG providers.
 #
 # =================================================================
@@ -8,9 +8,7 @@
 ARG SPATIALITE_VERSION=5.1.0
 ARG PYTHON_VERSION=3.12
 
-# =================================================================
 # Stage 1: BUILDER
-# =================================================================
 FROM python:${PYTHON_VERSION}-alpine AS builder
 
 ARG SPATIALITE_VERSION
@@ -71,9 +69,7 @@ RUN /venv/bin/pip uninstall -y pip setuptools wheel \
     && find /venv -type f -name '*.so' -exec strip -s {} + 2>/dev/null; true \
     && rm -rf /venv/share /venv/include
 
-# =================================================================
 # Stage 2: RUNTIME
-# =================================================================
 FROM python:${PYTHON_VERSION}-alpine
 
 ARG TZ="Etc/UTC"
@@ -83,7 +79,7 @@ ENV TZ=${TZ} \
 
 WORKDIR /pygeoapi
 
-# Runtime deps only — Alpine packages are minimal by default
+# Runtime deps only. Alpine packages are minimal by default
 RUN apk add --no-cache \
         proj \
         geos \

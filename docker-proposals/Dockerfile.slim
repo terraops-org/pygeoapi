@@ -8,11 +8,12 @@
 # =================================================================
 
 ARG SPATIALITE_VERSION=5.1.0
+# Base image pinned to an immutable dated tag (Ubuntu 26.04 LTS "resolute"),
+# never a floating tag like :latest. Bump the date to update.
+ARG UBUNTU_VERSION=resolute-20260707
 
-# =================================================================
 # Stage 1: BUILDER — Python wheels + mod_spatialite from source
-# =================================================================
-FROM ubuntu:noble-20251013 AS builder
+FROM ubuntu:${UBUNTU_VERSION} AS builder
 
 ARG SPATIALITE_VERSION
 ENV DEBIAN_FRONTEND="noninteractive"
@@ -90,10 +91,8 @@ RUN /venv/bin/python3 -m pip uninstall -y pip setuptools wheel \
     && find /venv -type f -name '*.so' -exec strip -s {} + 2>/dev/null; true \
     && rm -rf /venv/share /venv/include
 
-# =================================================================
 # Stage 2: RUNTIME
-# =================================================================
-FROM ubuntu:noble-20251013
+FROM ubuntu:${UBUNTU_VERSION}
 
 LABEL maintainer="Just van den Broecke <justb4@gmail.com>"
 
@@ -125,7 +124,7 @@ RUN apt-get update -y \
         libgeos-c1t64 \
         libsqlite3-0 \
         libminizip1t64 \
-    && localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8 \
+    && localedef -i en_US -c -f UTF-8 en_US.UTF-8 \
     && echo "For ${TZ} date=$(date)" && echo "Locale=$(locale)" \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
